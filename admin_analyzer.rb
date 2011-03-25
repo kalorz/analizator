@@ -8,14 +8,38 @@ require 'socket'
 require 'yaml'
 require 'request_log_analyzer'
 require 'ftools'
-require 'erb'
+
+class Progress
+  module Ansi
+    CR    = "\r"
+    CLEAR = "\e[0K"
+    RESET = CR + CLEAR
+  end
+
+  SPINNER    = %w(| / - \\)
+  ANIM_SPEED = 0.1
+
+  def initialize
+    @cycle, @anim_cycle, @last_tick = 0, 0, Time.now
+  end
+
+  def tick(message = nil)
+    unless Time.now - @last_tick < ANIM_SPEED
+      @anim_cycle += 1
+      @last_tick   = Time.now
+    end
+
+    @message = message unless message.nil? || message == ''
+
+    print "#{Ansi::RESET}[#{SPINNER[@anim_cycle % SPINNER.size]}] #{@message}"
+    $stdout.flush
+
+    @cycle += 1
+  end
+
+end
 
 class MyOutput < RequestLogAnalyzer::Output::HTML
-
-  def header
-    super
-    @io << tag(:p, "Blah!")
-  end
 
   def footer
     @io << "</body></html>\n"
@@ -23,85 +47,56 @@ class MyOutput < RequestLogAnalyzer::Output::HTML
 
 end
 
-class MyFilter < RequestLogAnalyzer::Filter::Field
-    @@counter = 0
-    
-    def self.counter
-      @@counter
-    end
-
-    def self.reset_counter
-      @@counter = 0
-    end
-
-    # Keep request if @mode == :select and request has the field and value.
-    # Drop request if @mode == :reject and request has the field and value.
-    # Returns nil otherwise.
-    # <tt>request</tt> Request Object
-    def filter(request)
-      found_field = request.every(@field).any? { |value| @value === value.to_s }
-      @@counter +=1 if found_field
-      return nil if !found_field && @mode == :select
-      return nil if found_field && @mode == :reject
-      return request
-    end
-
-end
-
 class AdminAnalyzer < Thor
-  LOG_FILES = 'log_files.yml'
+  LOG_FILES = 'log_profiles.yml'
 
-  desc 'analyze', 'Prints 1, 2, 3'
+  desc 'analyze', 'Analyzes all log files in given directory'
   def analyze(root_path)
     raise ArgumentError.new('ROOT_PATH must be existing directory') unless File.directory?(root_path)
 
     # Resolve path
     root_path = Pathname.new(root_path).realpath.to_s
 
-    puts "HOST: #{Socket.gethostname}"
+    host = Socket.gethostname
+    profile = "#{root_path}@#{host}"
+
+    puts "HOST: #{host}"
     puts "ROOT: #{root_path}"
 
-    log_files = File.exist?(LOG_FILES) ? YAML::load_file(LOG_FILES) : {}
+    log_profiles = File.exist?(LOG_FILES) ? YAML::load_file(LOG_FILES) : {}
+    logs = {}
 
-    if log_files.any?
+    if log_profiles[profile]
       puts "USING LOG FILES INDEX FROM #{LOG_FILES}"
+      logs = log_profiles[profile]
     else
-      log_files = {}
-      
-      Find.find(root_path) do |path|
-        if FileTest.directory?(path)
-          if File.basename(path)[0] == ?. # Does directory name start with a dot?
-            Find.prune                    # Don't look any further into this directory.
-          elsif File.exist?(File.join(path, 'config/environment.rb')) #&& # Detect Rails project
-              #File.directory?(File.join(path, 'app/views/admin'))
-            ['log/production.log', 'log/development.log'].each do |log|
-              if File.exist?(File.join(path, log))
-                log_file = Pathname.new(File.join(path, log)).realpath.to_s
-                log_files[log_file] = log_files[log_file] == nil || log_files[log_file] == '' ? path : common_substring(path, log_files[log_file])
-                print '.'
-              end
-            end
-            Find.prune
-          end
-        end
-      end
+      logs = []
+
+      find_log_files(logs, root_path, Progress.new)
+      puts ''
+
+      log_profiles[profile] = logs
 
       File.open(LOG_FILES, 'w+') do |file|
-        YAML.dump(log_files, file)
+        YAML.dump(log_profiles, file)
       end
     end
 
     Dir.mkdir('out') unless File.directory?('out')
     menu_html = '<html><head></head><body><ul>'
 
-    i, size = 0, log_files.size
-    log_files.each do |log_file, description|
-      say "* [#{(i+=1).to_s.rjust(size.to_s.length)}/#{size}] #{log_file} (#{description})", :green
-      MyFilter.reset_counter
-      controller = RequestLogAnalyzer::Controller.build(:source_files => File.new(log_file), :output => MyOutput, :file => "out/#{i}.html", :silent => true)
-      controller.add_filter(MyFilter, :mode => :select, :field => :controller, :value => /admin/i)
+    i, size = 0, logs.size
+    logs.each do |log|
+      say "* [#{(i+=1).to_s.rjust(size.to_s.length)}/#{size}] #{log}", :green
+      controller = RequestLogAnalyzer::Controller.build(
+          :source_files => log,
+          :output       => MyOutput,
+          :select       => {:controller => /admin/i},
+          :file         => "out/#{i}.html",
+          :silent       => true
+      )
       controller.run!
-      menu_html << %{<li><a href="#{i}.html" target="content">#{description}</a> (#{MyFilter.counter})</li>}
+      menu_html << %{<li><a href="#{i}.html" target="content">#{log}</a> <span title="Proper requests">(#{controller.source.parsed_requests - controller.source.skipped_requests})</span></li>}
     end
 
     File.copy('index.html', 'out/index.html')
@@ -112,8 +107,28 @@ class AdminAnalyzer < Thor
     end
   end
 
-  def common_substring(*args)
-    args.inject{|l,s| l=l.chop while l!=s[0...l.length];l}
+  private ##############################################################################################################
+
+  def find_log_files(out, root_path, progress = nil, depth = 0)
+    Find.find(root_path) do |path|
+      progress.tick if progress
+      if FileTest.directory?(path)
+        if File.basename(path)[0] == ?. # Does directory name start with a dot?
+          Find.prune                    # Don't look any further into this directory.
+        elsif FileTest.symlink?(path) && depth < 100 # Prevent deadlock
+          find_log_files(out, File.readlink(path), progress, depth + 1)
+        elsif File.exist?(File.join(path, 'config/environment.rb')) # Detect Rails project
+          ['log/production.log', 'log/development.log'].each do |log|
+            if File.exist?(File.join(path, log))
+              log = Pathname.new(File.join(path, log)).realpath.to_s
+              out << log unless out.include?(log)
+              progress.tick(log) if progress
+            end
+          end
+          Find.prune
+        end
+      end
+    end
   end
 
 end
