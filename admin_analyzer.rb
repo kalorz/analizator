@@ -7,6 +7,7 @@ require 'pathname'
 require 'socket'
 require 'yaml'
 require 'request_log_analyzer'
+require 'fileutils'
 
 class Progress
   module Ansi
