@@ -7,7 +7,6 @@ require 'pathname'
 require 'socket'
 require 'yaml'
 require 'request_log_analyzer'
-require 'ftools'
 
 class Progress
   module Ansi
@@ -99,7 +98,7 @@ class AdminAnalyzer < Thor
       menu_html << %{<li><a href="#{i}.html" target="content" title="#{log}">#{guess_project_name(log, root_path)}</a> <span title="#{guess_project_environment(log)}">[#{guess_project_environment(log)[0..0].upcase}]</span> <span title="Proper requests">(#{controller.source.parsed_requests - controller.source.skipped_requests})</span></li>}
     end
 
-    File.copy('index.html', 'out/index.html')
+    FileUtils.cp('index.html', 'out/index.html')
 
     menu_html << '</ul></body></html>'
     File.open('out/menu.html', 'w+') do |file|
