@@ -96,7 +96,7 @@ class AdminAnalyzer < Thor
           :silent       => true
       )
       controller.run!
-      menu_html << %{<li><a href="#{i}.html" target="content">#{log}</a> <span title="Proper requests">(#{controller.source.parsed_requests - controller.source.skipped_requests})</span></li>}
+      menu_html << %{<li><a href="#{i}.html" target="content" title="#{log}">#{guess_project_name(log, root_path)}</a> <span title="#{guess_project_environment(log)}">[#{guess_project_environment(log)[0..0].upcase}]</span> <span title="Proper requests">(#{controller.source.parsed_requests - controller.source.skipped_requests})</span></li>}
     end
 
     File.copy('index.html', 'out/index.html')
@@ -128,6 +128,23 @@ class AdminAnalyzer < Thor
           Find.prune
         end
       end
+    end
+  end
+
+  def guess_project_name(log, root_path)
+    log.gsub!(Regexp.new("^#{Regexp.escape(root_path)}\/?"), '')
+    if log.match(/([^\/]+)(\/shared|\/current|\/releases)?\/log/)
+      "#{$1}"
+    else
+      log.gsub(/\/log\/.+\.log$/, '')
+    end
+  end
+
+  def guess_project_environment(log)
+    if log.match(/\/log\/(.+)\.log$/)
+      "#{$1}"
+    else
+      '?'
     end
   end
 
