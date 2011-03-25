@@ -8,6 +8,45 @@ require 'socket'
 require 'yaml'
 require 'request_log_analyzer'
 require 'ftools'
+require 'erb'
+
+class MyOutput < RequestLogAnalyzer::Output::HTML
+
+  def header
+    super
+    @io << tag(:p, "Blah!")
+  end
+
+  def footer
+    @io << "</body></html>\n"
+  end
+
+end
+
+class MyFilter < RequestLogAnalyzer::Filter::Field
+    @@counter = 0
+    
+    def self.counter
+      @@counter
+    end
+
+    def self.reset_counter
+      @@counter = 0
+    end
+
+    # Keep request if @mode == :select and request has the field and value.
+    # Drop request if @mode == :reject and request has the field and value.
+    # Returns nil otherwise.
+    # <tt>request</tt> Request Object
+    def filter(request)
+      found_field = request.every(@field).any? { |value| @value === value.to_s }
+      @@counter +=1 if found_field
+      return nil if !found_field && @mode == :select
+      return nil if found_field && @mode == :reject
+      return request
+    end
+
+end
 
 class AdminAnalyzer < Thor
   LOG_FILES = 'log_files.yml'
@@ -58,9 +97,11 @@ class AdminAnalyzer < Thor
     i, size = 0, log_files.size
     log_files.each do |log_file, description|
       say "* [#{(i+=1).to_s.rjust(size.to_s.length)}/#{size}] #{log_file} (#{description})", :green
-      controller = RequestLogAnalyzer::Controller.build(:source_files => File.new(log_file), :output => :HTML, :select => {:controller => 'AdminController'}, :file => "out/#{i}.html")
-      menu_html << %{<li><a href="#{i}.html" target="content">#{description}</a></li>}
+      MyFilter.reset_counter
+      controller = RequestLogAnalyzer::Controller.build(:source_files => File.new(log_file), :output => MyOutput, :file => "out/#{i}.html", :silent => true)
+      controller.add_filter(MyFilter, :mode => :select, :field => :controller, :value => /admin/i)
       controller.run!
+      menu_html << %{<li><a href="#{i}.html" target="content">#{description}</a> (#{MyFilter.counter})</li>}
     end
 
     File.copy('index.html', 'out/index.html')
@@ -73,12 +114,6 @@ class AdminAnalyzer < Thor
 
   def common_substring(*args)
     args.inject{|l,s| l=l.chop while l!=s[0...l.length];l}
-  end
-
-  private ##############################################################################################################
-
-  def self.is_rails_project?
-
   end
 
 end
