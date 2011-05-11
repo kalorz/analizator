@@ -41,6 +41,10 @@ end
 
 class MyOutput < RequestLogAnalyzer::Output::HTML
 
+  def header
+
+  end
+
   def footer
     @io << "</body></html>\n"
   end
@@ -83,9 +87,9 @@ class AdminAnalyzer < Thor
     end
 
     Dir.mkdir('out') unless File.directory?('out')
-    menu_html = '<html><head></head><body><ul>'
+    menu_html = '<html><head><link href="../stylesheets/style.css" media="screen, projection" rel="stylesheet" type="text/css" /></head><body><ul>'
 
-    i, size = 0, logs.size
+    i, size, filtered_requests = 0, logs.size, 0
     logs.each do |log|
       say "* [#{(i+=1).to_s.rjust(size.to_s.length)}/#{size}] #{log}", :green
       controller = RequestLogAnalyzer::Controller.build(
@@ -97,6 +101,7 @@ class AdminAnalyzer < Thor
       )
       controller.run!
       menu_html << %{<li><a href="#{i}.html" target="content" title="#{log}">#{guess_project_name(log, root_path)}</a> <span title="#{guess_project_environment(log)}">[#{guess_project_environment(log)[0..0].upcase}]</span> <span title="Proper requests">(#{controller.source.parsed_requests - controller.source.skipped_requests})</span></li>}
+      filtered_requests += controller.source.parsed_requests - controller.source.skipped_requests
     end
 
     FileUtils.cp('index.html', 'out/index.html')
